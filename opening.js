@@ -86,14 +86,14 @@
   // 先載入下一張，讓讀者自行決定翻頁時間。
   function preloadNextComicPage() {
     const nextPage = new Image();
-    nextPage.src = `intro_${comicPageNumber + 1}.jpg`;
+    nextPage.src = `intro_${comicPageNumber + 1}.png`;
   }
 
   // 等目前的圖片淡出後再換圖，避免連點時跳過漫畫頁。
   async function fadeComicPage(from, to) {
     if (reducedMotion.matches) return;
     const animation = comicPage.animate([{ opacity: from }, { opacity: to }], {
-      duration: 300,
+      duration: 450,
       easing: "ease-in-out",
       fill: "forwards",
     });
@@ -121,7 +121,7 @@
     }
     comicPage.style.opacity = "0";
     comicPageNumber++;
-    comicPage.src = `intro_${comicPageNumber}.jpg`;
+    comicPage.src = `intro_${comicPageNumber}.png`;
     comicPage.alt = `開場漫畫，第 ${comicPageNumber} 張，共 ${comicPageCount} 張`;
     const action = comicPageNumber === comicPageCount ? "點擊繼續" : "點擊翻頁";
     nextComicPage.setAttribute("aria-label", `${comicPage.alt}，${action}`);
