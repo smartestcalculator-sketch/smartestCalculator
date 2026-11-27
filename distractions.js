@@ -1,12 +1,31 @@
 "use strict";
 
 const distractionAssets = new Map([
-  ["67", { sound: "67.mp3", images: ["67_1.jpg", "67_2.jpg", "67_3.jpg"], duration: 2300, sequential: true }],
-  ["87", { sound: "idiot.mp3", images: ["idiot1.jpg", "idiot2.jpg"], duration: 2600 }],
-  ["89", { sound: "89.mp3", images: ["89_1.jpeg", "89_2.jpeg", "89_3.jpeg"], duration: 2300, sequential: true }],
+  ["67", { sound: "67.mp3", images: [], duration: 2300 }],
+  ["87", {
+    sound: "idiot.mp3",
+    images: ["idiot_1.png", "idiot_2.png", "idiot_3.png"],
+    duration: 2600,
+    sequential: true,
+  }],
+  ["89", {
+    sound: "89.mp3",
+    images: ["89_1.png", "89_2.png"],
+    quote: "兄弟不問對錯 只問挺不挺",
+    duration: 4500,
+  }],
   ["404", { sound: "404.mp3", images: ["404_1.jpg"], duration: 4000 }],
-  ["3", { sound: "3.mp3", images: ["3_1.webp"], duration: 1700 }],
-  ["5", { sound: "5.mp3", images: ["5_1.png"], duration: 1700 }],
+  ["3", {
+    sound: "3.mp3",
+    images: ["3_1.png", "3_2.png", "3_3.png"],
+    duration: 5000,
+  }],
+  ["5", {
+    sound: "5.mp3",
+    images: ["5_1.png", "5_2.png", "5_3.png"],
+    slogan: "市長讓你們喝ㄋㄟㄋㄟ～",
+    duration: 5000,
+  }],
 ]);
 const distractionLayer = document.getElementById("distractions");
 const activeDistractions = new Map();
@@ -23,74 +42,142 @@ for (const { images } of distractionAssets.values()) {
   }
 }
 
+function measureDistractionGain(buffer) {
+  // 用最響的 200 毫秒估算音量，避免片頭或片尾的靜音把整段音效推得太大。
+  const windowSize = Math.round(buffer.sampleRate * 0.2);
+  const windowEnergy = new Float64Array(Math.ceil(buffer.length / windowSize));
+  let peak = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    const samples = buffer.getChannelData(channel);
+    for (let start = 0; start < samples.length; start += windowSize) {
+      const end = Math.min(start + windowSize, samples.length);
+      let energy = 0;
+      for (let i = start; i < end; i++) {
+        const sample = samples[i];
+        energy += sample * sample;
+        peak = Math.max(peak, Math.abs(sample));
+      }
+      windowEnergy[start / windowSize] += energy / ((end - start) * buffer.numberOfChannels);
+    }
+  }
+  const loudestRms = Math.sqrt(windowEnergy.reduce((max, energy) => Math.max(max, energy), 0));
+  return Math.min(4, 0.2 / loudestRms, 0.85 / peak);
+}
+
 function prepareDistractionSounds(context) {
   for (const [number, { sound }] of distractionAssets) {
     if (distractionSounds.has(number)) continue;
-    const buffer = fetch(sound)
+    const recording = fetch(sound)
       .then((response) => response.ok ? response.arrayBuffer() : null)
       .then((data) => data && context.decodeAudioData(data))
+      .then((buffer) => buffer && { buffer, volume: measureDistractionGain(buffer) })
       .catch(() => null);
-    distractionSounds.set(number, buffer);
+    distractionSounds.set(number, recording);
   }
 }
 
 function playDistractionSound(number) {
-  const sound = distractionSounds.get(number);
-  if (!soundOn || !audio || !sound || playingDistractionSounds.has(number)) return;
-  const context = audio;
-  const playback = { startedAt: performance.now() };
+  if (!soundOn) return;
+  playingDistractionSounds.get(number)?.stop?.();
+  const playback = {};
   playingDistractionSounds.set(number, playback);
 
-  sound.then((buffer) => {
-    if (playingDistractionSounds.get(number) !== playback) return;
-    const offset = (performance.now() - playback.startedAt) / 1000;
-    if (!buffer || offset >= buffer.duration) {
+  const clearPlayback = () => {
+    if (playingDistractionSounds.get(number) === playback) {
       playingDistractionSounds.delete(number);
+    }
+  };
+
+  async function startPlayback() {
+    const recording = await distractionSounds.get(number);
+    if (playingDistractionSounds.get(number) !== playback) return;
+    if (!recording || !gameAudioOutput) {
+      // 直接開啟 HTML 或解碼失敗時，仍可用瀏覽器的播放器讀同一個 MP3。
+      const player = new Audio(distractionAssets.get(number).sound);
+      player.volume = soundVolume;
+      player.onended = clearPlayback;
+      player.onerror = clearPlayback;
+      playback.stop = () => player.pause();
+      playback.setVolume = (volume) => { player.volume = volume; };
+      await player.play();
       return;
     }
 
-    const source = context.createBufferSource();
-    const gain = context.createGain();
-    gain.gain.value = 0.32;
-    source.buffer = buffer;
-    source.connect(gain).connect(context.destination);
-    source.onended = () => {
-      if (playingDistractionSounds.get(number) === playback) playingDistractionSounds.delete(number);
-    };
-    source.start(0, offset);
-    playback.source = source;
-  }).catch(() => {
-    if (playingDistractionSounds.get(number) === playback) playingDistractionSounds.delete(number);
-  });
+    const source = audio.createBufferSource();
+    const gain = audio.createGain();
+    gain.gain.value = recording.volume;
+    source.buffer = recording.buffer;
+    source.connect(gain).connect(gameAudioOutput);
+    source.onended = clearPlayback;
+    source.start();
+    playback.stop = () => source.stop();
+  }
+  startPlayback().catch(clearPlayback);
+}
+
+function setDistractionVolume(volume) {
+  for (const playback of playingDistractionSounds.values()) playback.setVolume?.(volume);
 }
 
 function muteDistractionSounds() {
-  for (const { source } of playingDistractionSounds.values()) source?.stop();
+  for (const playback of playingDistractionSounds.values()) playback.stop?.();
   playingDistractionSounds.clear();
 }
 
 function showDistraction(number) {
   const effect = distractionAssets.get(number);
-  if (!effect || activeDistractions.has(number)) return;
+  if (!effect) return;
+  // 音效的重播不受圖片是否還在畫面上影響。
+  playDistractionSound(number);
+  if (activeDistractions.has(number)) return;
 
   const group = document.createElement("div");
   group.className = `distraction distraction-${number}`;
-  const images = effect.images.map((file) => {
+  // 67 用畫面晃動與符號取代圖片。
+  if (number === "67") {
+    for (const symbol of ["6", "7"]) {
+      const label = document.createElement("span");
+      label.textContent = symbol;
+      group.append(label);
+    }
+  }
+  const stages = effect.images.map((file) => {
     const image = document.createElement("img");
     image.alt = "";
     image.src = file;
-    group.append(image);
+    if (number === "3" || number === "5") {
+      // 限制動畫的顯示範圍，讓三張圖各自留在自己的區域。
+      const slot = document.createElement("div");
+      slot.append(image);
+      group.append(slot);
+    } else {
+      group.append(image);
+    }
     return image;
   });
+  if (effect.slogan) {
+    const slogan = document.createElement("div");
+    slogan.className = "distraction-slogan";
+    slogan.textContent = effect.slogan;
+    group.append(slogan);
+  }
   const timers = [];
-  if (effect.sequential) {
-    const interval = effect.duration / images.length;
-    images.forEach((image, index) => {
+  if (effect.quote) {
+    const quote = document.createElement("blockquote");
+    quote.textContent = effect.quote;
+    group.append(quote);
+    stages.push(quote);
+  }
+
+  if (effect.sequential || effect.quote) {
+    // 先隱藏上一個項目，再顯示下一個項目。
+    const interval = effect.duration / stages.length;
+    stages.forEach((stage, index) => {
       if (index === 0) return;
-      image.hidden = true;
+      stage.hidden = true;
       timers.push(setTimeout(() => {
-        images[index - 1].hidden = true;
-        image.hidden = false;
+        stages[index - 1].hidden = true;
+        stage.hidden = false;
       }, interval * index));
     });
   }
@@ -101,7 +188,6 @@ function showDistraction(number) {
     activeDistractions.delete(number);
   }, effect.duration));
   activeDistractions.set(number, active);
-  playDistractionSound(number);
 }
 
 function beginDistractionRound(text) {

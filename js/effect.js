@@ -27,14 +27,14 @@ const countdownEffect = (() => {
     heartbeat = null;
   }
 
-  function playHeartbeat(audio, pressure, remaining) {
-    if (audio?.state !== "running") return;
+  function playHeartbeat(audio, output, pressure, remaining) {
+    if (!output || audio.state !== "running") return;
     const now = audio.currentTime;
     const beatDuration = Math.min(remaining, 0.24);
     const end = now + beatDuration;
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
-    const volume = 0.11 + 0.13 * pressure;
+    const volume = 0.28 + 0.12 * pressure;
 
     // 同一個低頻音源做出心跳的兩下重音，第二下較輕。
     oscillator.type = "sine";
@@ -45,7 +45,7 @@ const countdownEffect = (() => {
     gain.gain.linearRampToValueAtTime(0, now + beatDuration * 0.38);
     gain.gain.linearRampToValueAtTime(volume * 0.65, now + beatDuration * 0.54);
     gain.gain.linearRampToValueAtTime(0, end);
-    oscillator.connect(gain).connect(audio.destination);
+    oscillator.connect(gain).connect(output);
     oscillator.onended = () => {
       oscillator.disconnect();
       gain.disconnect();
@@ -65,7 +65,7 @@ const countdownEffect = (() => {
     body.style.removeProperty("--countdown-tilt");
   }
 
-  function update(remaining, audio) {
+  function update(remaining, audio, output, visualEffectStrength) {
     if (remaining <= 0) {
       reset();
       return;
@@ -85,11 +85,10 @@ const countdownEffect = (() => {
 
     if (beat !== lastBeat) {
       lastBeat = beat;
-      playHeartbeat(audio, pressure, remaining);
+      playHeartbeat(audio, output, pressure, remaining);
     }
 
-    const strength = body.classList.contains("soft") ? 0.45 : 1;
-    const visualPressure = pressure * strength;
+    const visualPressure = pressure * visualEffectStrength;
     const zoom = visualPressure * (0.056 + 0.022 * pulse);
     body.classList.add("countdown-pressure");
     body.style.setProperty("--countdown-shade", visualPressure * 0.86);

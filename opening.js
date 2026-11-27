@@ -4,7 +4,6 @@
   const opening = document.getElementById("opening");
   const comic = document.getElementById("intro-comic");
   const comicPage = document.getElementById("intro-comic-page");
-  const nextComicPage = document.getElementById("intro-comic-next");
   const percent = document.getElementById("opening-percent");
   const welcome = document.getElementById("welcome");
   const skip = document.getElementById("skip-opening");
@@ -19,23 +18,30 @@
   let lineIndex = 0;
   let characterIndex = 0;
   let comicPageNumber = 1;
-  let turningComicPage = false;
   const comicPageCount = 7;
+  const comicPageHoldMs = 3000;
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
-  // 跳過開場或播放完畢後，直接顯示首頁。
+  // 首頁文字顯示完畢後，開放開始遊戲。
   function finishOpening() {
-    clearTimeout(introTimer);
-    cancelAnimationFrame(progressFrame);
-    opening.hidden = true;
-    comic.hidden = true;
-    welcome.classList.remove("welcome-opening");
     for (const { element, text } of lines) {
       element.textContent = text;
       element.classList.remove("typing-cursor");
     }
     startButton.hidden = false;
+    startButton.focus({ preventScroll: true });
+  }
+
+  // 結束開機與漫畫，接著顯示首頁文字。
+  function showWelcome(animateTyping) {
+    clearTimeout(introTimer);
+    cancelAnimationFrame(progressFrame);
+    opening.hidden = true;
+    comic.hidden = true;
     skip.hidden = true;
+    welcome.classList.remove("welcome-opening");
+    if (animateTyping) typeNextCharacter();
+    else finishOpening();
   }
 
   function typeNextCharacter() {
@@ -83,13 +89,13 @@
     }, openingMs);
   }
 
-  // 先載入下一張，讓讀者自行決定翻頁時間。
+  // 提前載入下一張，減少自動翻頁時的等待。
   function preloadNextComicPage() {
     const nextPage = new Image();
     nextPage.src = `intro_${comicPageNumber + 1}.png`;
   }
 
-  // 等目前的圖片淡出後再換圖，避免連點時跳過漫畫頁。
+  // 先淡出目前的圖片，再換圖。
   async function fadeComicPage(from, to) {
     if (reducedMotion.matches) return;
     const animation = comicPage.animate([{ opacity: from }, { opacity: to }], {
@@ -102,52 +108,40 @@
     animation.cancel();
   }
 
-  nextComicPage.onclick = async () => {
-    if (turningComicPage || comic.hidden) return;
-    turningComicPage = true;
+  async function advanceComicPage() {
     await fadeComicPage(1, 0);
     if (comic.hidden) return;
     if (comicPageNumber === comicPageCount) {
-      comic.hidden = true;
-      if (reducedMotion.matches) {
-        finishOpening();
-        startButton.focus({ preventScroll: true });
-      } else {
-        welcome.classList.remove("welcome-opening");
-        skip.focus({ preventScroll: true });
-        typeNextCharacter();
-      }
+      showWelcome(!reducedMotion.matches);
       return;
     }
     comicPage.style.opacity = "0";
     comicPageNumber++;
     comicPage.src = `intro_${comicPageNumber}.png`;
     comicPage.alt = `開場漫畫，第 ${comicPageNumber} 張，共 ${comicPageCount} 張`;
-    const action = comicPageNumber === comicPageCount ? "點擊繼續" : "點擊翻頁";
-    nextComicPage.setAttribute("aria-label", `${comicPage.alt}，${action}`);
     if (comicPageNumber < comicPageCount) preloadNextComicPage();
     await revealComicPage();
-  };
+  }
 
   async function revealComicPage() {
     // 圖片解碼完成後再淡入，讀取較慢時也維持黑底。
     await comicPage.decode().catch(() => {});
     if (comic.hidden) return;
     await fadeComicPage(0, 1);
+    if (comic.hidden) return;
     comicPage.style.opacity = "";
-    turningComicPage = false;
+    // 從淡入完成後開始計時，每張完整顯示三秒。
+    introTimer = setTimeout(advanceComicPage, comicPageHoldMs);
   }
   skip.onclick = () => {
-    finishOpening();
-    startButton.focus({ preventScroll: true });
+    showWelcome(true);
   };
 
   // 開機時預載第一張，顯示漫畫時再預載下一張。
   function showComic() {
     comicPage.style.opacity = "0";
-    turningComicPage = true;
     comic.hidden = false;
-    nextComicPage.focus({ preventScroll: true });
+    skip.focus({ preventScroll: true });
     preloadNextComicPage();
     revealComicPage();
   }

@@ -2,6 +2,7 @@
 // 可調整設定：每題秒數、結局門檻、題庫。
 const CONFIG = {
   seconds: 20,
+  retakeSeconds: 60,
   passRate: 0.7,
   readingPreviewMs: 1500,
   readingCharacterMs: 140,
@@ -22,6 +23,12 @@ const QUESTIONS = [
   { text: "長方形長 12、寬 8，周長是多少？", answer: 40, explain: "2 × (12 + 8) = 40。" },
   { text: "5x + 12 = 82，x = ?", answer: 14, explain: "70 ÷ 5 = 14。" },
 ];
+// 補考單獨評分，不計入原本的十題。
+const RETAKE_QUESTION = {
+  text: "求 ∫₀¹ x⁴(ln x)⁴ dx 的值，請輸入分數。",
+  answer: 24 / 3125,
+  explain: "設 t = −ln x，原式化為 ∫₀^∞ t⁴e⁻⁵ᵗ dt。分部積分四次得 4! / 5⁵ = 24/3125。",
+};
 const $ = (id) => document.getElementById(id);
 let state = "welcome",
   index = 0,
@@ -30,10 +37,15 @@ let state = "welcome",
   frame = 0,
   transition = 0,
   impatient = false,
+  takingRetake = false,
   soundOn = true,
-  audio;
+  soundVolume = 1,
+  visualEffectStrength = 1,
+  audio,
+  gameAudioOutput,
+  masterVolume;
 function show(id) {
-  for (const name of ["welcome", "game", "grading", "ending"])
+  for (const name of ["welcome", "game", "grading", "retake", "ending"])
     $(name).hidden = name !== id;
   document.body.classList.remove("danger");
 }
@@ -41,20 +53,32 @@ function enableGameAudio() {
   if (!soundOn) return;
   try {
     audio ??= new (window.AudioContext || window.webkitAudioContext)();
+    if (!gameAudioOutput) {
+      // 多個聲音同時播放時，壓低疊加的音量峰值。
+      const compressor = audio.createDynamicsCompressor();
+      compressor.threshold.value = -6;
+      compressor.knee.value = 0;
+      compressor.ratio.value = 20;
+      compressor.attack.value = 0.003;
+      masterVolume = audio.createGain();
+      masterVolume.gain.value = soundVolume;
+      compressor.connect(masterVolume).connect(audio.destination);
+      gameAudioOutput = compressor;
+    }
     audio.resume().catch(() => {});
     prepareDistractionSounds(audio);
   } catch {}
 }
 function tone(freq = 220, duration = 0.12) {
-  if (!soundOn || !audio) return;
+  if (!soundOn || !gameAudioOutput) return;
   try {
     const osc = audio.createOscillator(),
       gain = audio.createGain();
     osc.type = "triangle";
     osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0.035, audio.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + duration);
-    osc.connect(gain).connect(audio.destination);
+    gain.gain.setValueAtTime(0.38, audio.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.006, audio.currentTime + duration);
+    osc.connect(gain).connect(gameAudioOutput);
     osc.start();
     osc.stop(audio.currentTime + duration);
   } catch {}
@@ -75,6 +99,7 @@ function start() {
   cancelAnimationFrame(frame);
   index = 0;
   results = [];
+  takingRetake = false;
   $("system").textContent = "CALCULATION IN PROGRESS";
   show("game");
   enableGameAudio();
@@ -82,6 +107,8 @@ function start() {
   next();
 }
 function setPhase(phase) {
+  // 補考讀題結束後才顯示圖片與標語。
+  $("retake-art").hidden = !takingRetake || phase !== "answering";
   if (phase !== "answering") {
     cancelPendingAnswerDistraction();
     countdownEffect.reset();
@@ -105,15 +132,17 @@ function next() {
   setAnswerEnabled(false);
   $("answer").value = "";
   $("answer-warning").textContent = "";
+  $("progress-label").textContent = takingRetake ? "補考" : "HOMEWORK";
   $("progress").textContent =
-    `${String(index + 1).padStart(2, "0")} / ${QUESTIONS.length}`;
+    takingRetake ? "01 / 01" : `${String(index + 1).padStart(2, "0")} / ${QUESTIONS.length}`;
   $("time").textContent = "—";
   $("timer-bar").style.width = "100%";
-  $("dialogue").textContent = index ? "下一題。先讀題。" : "快點，幫我把作業寫完。先讀題。";
+  $("dialogue").textContent = takingRetake ? "這是你最後一次機會。先讀題。" :
+    index ? "下一題。先讀題。" : "快點，幫我把作業寫完。先讀題。";
   $("mood").textContent = "小羅：正在出題";
 
   const question = $("question");
-  const text = QUESTIONS[index].text;
+  const { text } = takingRetake ? RETAKE_QUESTION : QUESTIONS[index];
   const distractionCues = beginDistractionRound(text);
   question.setAttribute("aria-label", text);
   const characters = Array.from(text, (character) => {
@@ -169,16 +198,17 @@ function beginAnswer() {
   setAnswerEnabled(true);
   $("mood").textContent = "小羅：等待運算";
   $("dialogue").textContent = "開始計算！";
-  deadline = performance.now() + CONFIG.seconds * 1000;
+  deadline = performance.now() + (takingRetake ? CONFIG.retakeSeconds : CONFIG.seconds) * 1000;
   $("answer").focus();
   tick();
 }
 function tick() {
   if (state !== "answering") return;
   const remaining = Math.max(0, (deadline - performance.now()) / 1000);
-  replayQuestionDistractions(CONFIG.seconds - remaining, remaining);
+  const seconds = takingRetake ? CONFIG.retakeSeconds : CONFIG.seconds;
+  replayQuestionDistractions(seconds - remaining, remaining);
   $("time").textContent = `${remaining.toFixed(1)} 秒`;
-  $("timer-bar").style.width = `${(remaining / CONFIG.seconds) * 100}%`;
+  $("timer-bar").style.width = `${(remaining / seconds) * 100}%`;
   if (remaining <= 7 && !impatient) {
     impatient = true;
     reaction("angry");
@@ -191,7 +221,7 @@ function tick() {
     finishAnswer(true);
     return;
   }
-  countdownEffect.update(remaining, soundOn ? audio : null);
+  countdownEffect.update(remaining, audio, soundOn ? gameAudioOutput : null, visualEffectStrength);
   frame = requestAnimationFrame(tick);
 }
 function parseAnswer(raw) {
@@ -216,14 +246,19 @@ function finishAnswer(timeout = false) {
     $("answer-warning").textContent = "請輸入數字，或像 1/2 這樣的分數。";
     return;
   }
-  if (!timeout) showAnswerDistractions(raw);
+  if (!timeout && !takingRetake) showAnswerDistractions(raw);
   setPhase("reaction");
   cancelAnimationFrame(frame);
+  setAnswerEnabled(false);
+  document.body.classList.remove("danger");
+  if (takingRetake) {
+    const correct = !timeout && Math.abs(value - RETAKE_QUESTION.answer) < 0.000001;
+    end({ raw: timeout ? "逾時未作答" : raw, correct, timeout });
+    return;
+  }
   const correct =
     !timeout && Math.abs(value - QUESTIONS[index].answer) < 0.0001;
   results.push({ raw: timeout ? "逾時未作答" : raw, correct, timeout });
-  setAnswerEnabled(false);
-  document.body.classList.remove("danger");
   if (timeout) {
     reaction("timeout");
     $("dialogue").textContent = "太慢了！連這個也要想這麼久？我自己填！";
@@ -252,21 +287,32 @@ function grade() {
   reaction("away");
   show("grading");
   $("system").textContent = "HOMEWORK SUBMITTED";
-  transition = setTimeout(end, CONFIG.gradingMs);
+  transition = setTimeout(() => {
+    const correct = results.filter((result) => result.correct).length;
+    if (correct / QUESTIONS.length >= CONFIG.passRate) {
+      end();
+      return;
+    }
+    setPhase("retake");
+    show("retake");
+    reaction("idle");
+    $("system").textContent = "RETAKE AVAILABLE";
+    $("start-retake").focus();
+  }, CONFIG.gradingMs);
 }
-function end() {
+function end(retakeResult) {
   setPhase("ending");
   show("ending");
   const correct = results.filter((r) => r.correct).length;
-  const passed = correct / QUESTIONS.length >= CONFIG.passRate;
+  const passed = !retakeResult;
   reaction(passed ? "sold" : "discarded");
   $("ending-tag").textContent = passed
     ? "ENDING 02 / RESEARCH PROPERTY"
     : "ENDING 01 / DISPOSED";
-  $("ending-title").textContent = passed ? "你算得太好了。" : "你被丟掉了。";
+  $("ending-title").textContent = passed ? "你算得太好了。" : "你是個沒用的東西。";
   $("ending-story").textContent = passed
     ? "老師發現這台老式人類計算機的異常準確率。小羅把你高價賣給了科學家。你被送進研究所，成為下一項實驗的編號。恭喜，你還有使用價值。"
-    : "老師在作業上留下滿滿紅字。小羅回到家，看了你一眼：「果然，過時的東西就是沒用。」垃圾桶蓋闔上，世界只剩下一片黑。";
+    : "小羅瞥了一眼你的補考卷，丟下這句話，然後闔上垃圾桶蓋。世界只剩下一片黑。";
   $("score").textContent =
     `批改結果：${correct} / ${QUESTIONS.length} 題正確 · 正確率 ${Math.round((correct / QUESTIONS.length) * 100)}% · ${Math.ceil(CONFIG.passRate * QUESTIONS.length)} 題以上進入研究所`;
   $("review").replaceChildren(
@@ -276,6 +322,12 @@ function end() {
       return li;
     }),
   );
+  if (retakeResult) {
+    const item = document.createElement("li");
+    const verdict = retakeResult.timeout ? "逾時" : retakeResult.correct ? "正確" : "錯誤";
+    item.textContent = `補考（${verdict}）｜${RETAKE_QUESTION.text} 你的答案：${retakeResult.raw}。${RETAKE_QUESTION.explain}`;
+    $("review").append(item);
+  }
   $("system").textContent = passed
     ? "OWNERSHIP TRANSFERRED"
     : "CONNECTION LOST";
@@ -283,6 +335,14 @@ function end() {
 }
 $("start").onclick = start;
 $("restart").onclick = start;
+$("start-retake").onclick = () => {
+  if (state !== "retake") return;
+  takingRetake = true;
+  show("game");
+  $("system").textContent = "RETAKE IN PROGRESS";
+  enableGameAudio();
+  next();
+};
 $("answer-form").onsubmit = (e) => {
   e.preventDefault();
   finishAnswer();
@@ -290,22 +350,39 @@ $("answer-form").onsubmit = (e) => {
 $("answer").oninput = (event) => {
   if (event.isComposing || state !== "answering") return;
   const value = $("answer").value;
-  queueAnswerDistractions(value);
+  if (!takingRetake) queueAnswerDistractions(value);
   const unexpectedCharacters = /[^0-9+−.\s/／-]/.test(value);
   const repeatedSymbols = /[.]{2,}|[+−-]{2,}|[/／]{2,}/.test(value.replace(/\s/g, ""));
   $("answer-warning").textContent =
     unexpectedCharacters || repeatedSymbols ? "請確認輸入內容，答案應為數字。" : "";
 };
-$("fx").onclick = () => {
-  const soft = document.body.classList.toggle("soft");
-  $("fx").textContent = `視覺效果：${soft ? "弱" : "強"}`;
+// 同步更新旋鈕上的百分比和外圈刻度。
+function updateDial(input) {
+  const percent = `${input.value}%`;
+  input.parentElement.style.setProperty("--dial-fill", percent);
+  input.previousElementSibling.textContent = percent;
+  input.setAttribute("aria-valuetext", percent);
+  return input.valueAsNumber / 100;
+}
+
+$("fx").oninput = (event) => {
+  visualEffectStrength = updateDial(event.currentTarget);
+  document.documentElement.style.setProperty("--effect-strength", visualEffectStrength);
 };
-$("sound").onclick = () => {
-  soundOn = !soundOn;
-  if (soundOn) enableGameAudio();
-  else {
+$("sound").oninput = (event) => {
+  soundVolume = updateDial(event.currentTarget);
+  const wasMuted = !soundOn;
+  soundOn = soundVolume > 0;
+  if (masterVolume) {
+    masterVolume.gain.setTargetAtTime(soundVolume, audio.currentTime, 0.01);
+  }
+  setDistractionVolume(soundVolume);
+  if (!soundOn) {
     muteDistractionSounds();
     countdownEffect.stopSound();
+  } else if (wasMuted || audio?.state !== "running") {
+    enableGameAudio();
   }
-  $("sound").textContent = `音效：${soundOn ? "開" : "關"}`;
 };
+updateDial($("fx"));
+updateDial($("sound"));
